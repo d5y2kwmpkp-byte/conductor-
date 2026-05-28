@@ -14,7 +14,6 @@ const hwBtn = {
   fontFamily:"monospace", boxShadow:`0 2px 0 ${T.borderDark}`,
 };
 
-// ── API CALL ──
 async function callCook(pad, style, bpm, vibe = null) {
   const res = await fetch("/api/cook", {
     method:  "POST",
@@ -34,13 +33,12 @@ export default function App() {
   const [style,         setStyle]        = useState("SWING");
   const [currentStep,   setCurrentStep]  = useState(-1);
   const [view,          setView]         = useState("pads");
+  const [audioUnlocked, setAudioUnlocked]= useState(false);
 
-  // Sheets
   const [roleSheet,     setRoleSheet]    = useState(null);
   const [mixerOpen,     setMixerOpen]    = useState(false);
   const [showVibe,      setShowVibe]     = useState(false);
 
-  // Recording
   const [bandListening, setBandListening] = useState(false);
   const [bandCooking,   setBandCooking]   = useState(false);
   const [padListening,  setPadListening]  = useState(null);
@@ -55,15 +53,13 @@ export default function App() {
   const padsRef  = useRef(pads);
 
   useEffect(() => { padsRef.current = pads; }, [pads]);
-  useEffect(() => { engine.bpm   = bpm; },   [bpm]);
+  useEffect(() => { engine.bpm = bpm; }, [bpm]);
 
-  // Wire engine step callback
   useEffect(() => {
     engine.onStep = step => setCurrentStep(step);
     return () => engine.stop();
   }, []);
 
-  // Sync patterns → engine
   useEffect(() => {
     const merged = {};
     pads.forEach(pad => {
@@ -74,7 +70,6 @@ export default function App() {
     engine.patterns = merged;
   }, [pads, channels]);
 
-  // Sync EQ/vol → engine
   useEffect(() => {
     Object.entries(channels).forEach(([padId, ch]) => {
       engine.setVol(padId, ch.muted ? 0 : ch.vol);
@@ -83,6 +78,20 @@ export default function App() {
       engine.setEQ(padId, "lo",  ch.lo);
     });
   }, [channels]);
+
+  const unlockAudio = () => {
+    engine.boot();
+    engine.wake();
+    // Play a silent buffer to unlock iOS audio
+    if (engine.ctx) {
+      const buf = engine.ctx.createBuffer(1, 1, 22050);
+      const src = engine.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(engine.ctx.destination);
+      src.start(0);
+    }
+    setAudioUnlocked(true);
+  };
 
   const showMsg = (msg, ms = 2500) => {
     setLcdMsg(msg);
@@ -94,22 +103,16 @@ export default function App() {
     setTimeout(() => setActivePads(p => ({ ...p, [id]: false })), 90);
   };
 
-  const updCh = (padId, key, val) =>
-    setChannels(p => ({ ...p, [padId]: { ...p[padId], [key]: val } }));
-
-  const updPad = updated =>
-    setPads(p => p.map(p2 => p2.id === updated.id ? updated : p2));
-
+  const updCh  = (padId, key, val) => setChannels(p => ({ ...p, [padId]: { ...p[padId], [key]: val } }));
+  const updPad = updated => setPads(p => p.map(p2 => p2.id === updated.id ? updated : p2));
   const assignedPads = pads.filter(p => p.role);
 
-  // ── EVERYBODY IN ──
   const onBandDown = () => {
     if (bandCooking || padListening) return;
     engine.boot(); engine.wake();
-    tapBuf.current  = [];
+    tapBuf.current   = [];
     recStart.current = Date.now();
     setBandListening(true);
-    // Start mic
     engine.startMicRecording().then(sess => { micSess.current = sess; });
   };
 
@@ -118,26 +121,18 @@ export default function App() {
     setBandListening(false);
     engine.stopMicRecording(micSess.current);
     micSess.current = null;
-
     const taps = tapBuf.current;
     recStart.current = null;
-
     if (assignedPads.length === 0) { showMsg("ASSIGN MUSICIANS FIRST"); return; }
-
-    // Convert taps to steps if any taps recorded
     const detectedSteps = taps.length > 0 ? engine.tapsToSteps(taps, bpm) : null;
-
     setBandCooking(true);
     showMsg(`COOKING ${assignedPads.length} MUSICIANS...`, 4000);
-
-    // Fire all in parallel
     const results = await Promise.allSettled(
       assignedPads.map(pad => {
         const padWithSteps = detectedSteps ? { ...pad, steps: detectedSteps } : pad;
         return callCook(padWithSteps, style, bpm, null);
       })
     );
-
     const newReplies = {};
     setPads(prev => {
       const next = [...prev];
@@ -151,27 +146,19 @@ export default function App() {
       });
       return next;
     });
-
     setAiReplies(prev => ({ ...prev, ...newReplies }));
     setBandCooking(false);
-
-    if (!playing) {
-      engine.start();
-      setPlaying(true);
-    }
+    if (!playing) { engine.start(); setPlaying(true); }
     showMsg("THE BAND IS IN");
   };
 
-  // ── VIBE ──
   const onVibeSubmit = async vibe => {
     if (assignedPads.length === 0) { showMsg("ASSIGN MUSICIANS FIRST"); return; }
     setBandCooking(true);
     showMsg("SETTING THE VIBE...", 4000);
-
     const results = await Promise.allSettled(
       assignedPads.map(pad => callCook(pad, style, bpm, vibe))
     );
-
     const newReplies = {};
     setPads(prev => {
       const next = [...prev];
@@ -185,15 +172,12 @@ export default function App() {
       });
       return next;
     });
-
     setAiReplies(prev => ({ ...prev, ...newReplies }));
     setBandCooking(false);
-
     if (!playing) { engine.start(); setPlaying(true); }
     showMsg(`VIBE SET · ${vibe}`);
   };
 
-  // ── SINGLE PAD REDIRECT ──
   const onPadDown = pad => {
     if (!pad.role) { setRoleSheet(pad); return; }
     if (bandListening || bandCooking) return;
@@ -209,17 +193,12 @@ export default function App() {
     if (padListening !== pad.id) return;
     setPadListening(null);
     if (!pad.role) return;
-
     const taps    = tapBuf.current;
     const elapsed = Date.now() - (recStart.current || Date.now());
     recStart.current = null;
-
-    // Only cook if held for >300ms (intentional)
     if (elapsed < 300) { flash(pad.id); return; }
-
     const steps        = taps.length > 0 ? engine.tapsToSteps(taps, bpm) : pad.steps;
     const padWithSteps = { ...pad, steps };
-
     setPadCooking(pad.id);
     try {
       const result = await callCook(padWithSteps, style, bpm, null);
@@ -235,13 +214,6 @@ export default function App() {
     }
   };
 
-  const tapOnPad = (pad, time) => {
-    if (padListening === pad.id || bandListening) {
-      tapBuf.current.push({ time: Date.now() - (recStart.current || Date.now()) });
-    }
-  };
-
-  // ── TRANSPORT ──
   const togglePlay = () => {
     if (playing) { engine.stop(); setPlaying(false); setCurrentStep(-1); }
     else         { engine.start(); setPlaying(true); }
@@ -252,7 +224,6 @@ export default function App() {
     setRoleSheet(null);
   };
 
-  // ── STATUS ──
   const lcdStatus = bandCooking ? "◎ COOKING"
     : bandListening ? "◉ LISTENING"
     : playing       ? "▶ PLAYING"
@@ -269,8 +240,17 @@ export default function App() {
             CONDUCTOR<span style={{ color:T.accent }}>.</span>
           </h1>
         </div>
-        <div style={{ background:T.lcd,border:`1px solid ${T.lcdDark}`,padding:"3px 8px",borderRadius:"3px",fontSize:"8px",color:T.lcdText,fontFamily:"monospace",letterSpacing:"2px",boxShadow:"inset 0 1px 3px rgba(0,0,0,0.12)" }}>v3.0</div>
+        <div style={{ background:T.lcd,border:`1px solid ${T.lcdDark}`,padding:"3px 8px",borderRadius:"3px",fontSize:"8px",color:T.lcdText,fontFamily:"monospace",letterSpacing:"2px" }}>v3.0</div>
       </div>
+
+      {/* Audio unlock button — iOS requires explicit tap */}
+      {!audioUnlocked && (
+        <button
+          onClick={unlockAudio}
+          style={{ width:"100%",maxWidth:"480px",padding:"14px",marginBottom:"12px",background:"#cc0000",border:"2px solid #880000",borderRadius:"8px",color:"#fff",fontSize:"11px",letterSpacing:"3px",cursor:"pointer",fontFamily:"monospace",boxShadow:"0 4px 0 #880000",textTransform:"uppercase" }}>
+          ▶ TAP TO UNLOCK AUDIO
+        </button>
+      )}
 
       {/* LCD */}
       <div style={{ width:"100%",maxWidth:"480px",background:T.lcd,border:`1.5px solid ${T.lcdDark}`,borderRadius:"5px",padding:"8px 14px",marginBottom:"12px",display:"flex",justifyContent:"space-between",alignItems:"center",boxShadow:"inset 0 2px 5px rgba(0,0,0,0.18),0 1px 0 rgba(255,255,255,0.6)" }}>
@@ -287,27 +267,18 @@ export default function App() {
 
       {/* Transport */}
       <div style={{ width:"100%",maxWidth:"480px",display:"flex",gap:"8px",marginBottom:"12px",padding:"10px 12px",background:T.panel,border:`1.5px solid ${T.border}`,borderRadius:"6px",alignItems:"center",boxShadow:`0 2px 4px ${T.shadow},inset 0 1px 0 rgba(255,255,255,0.7)` }}>
-
-        {/* Play/Pause */}
         <button onClick={togglePlay} style={{ width:"42px",height:"42px",borderRadius:"5px",background:playing?T.accent:T.green,border:`2px solid ${playing?T.accentDark:T.greenDark}`,color:"#fff",fontSize:"16px",cursor:"pointer",boxShadow:`0 3px 0 ${playing?T.accentDark:T.greenDark}`,display:"flex",alignItems:"center",justifyContent:"center",transform:playing?"translateY(1px)":"none",transition:"all 0.07s",flexShrink:0 }}>
           {playing ? "■" : "▶"}
         </button>
-
-        {/* BPM */}
         <div style={{ display:"flex",alignItems:"center",gap:"4px",flexShrink:0 }}>
           <button onClick={() => setBpm(b => Math.max(60, b-5))} style={hwBtn}>−</button>
           <div style={{ background:T.lcd,border:`1.5px solid ${T.lcdDark}`,padding:"4px 8px",borderRadius:"3px",fontSize:"16px",fontWeight:"bold",color:T.lcdText,fontFamily:"monospace",minWidth:"46px",textAlign:"center",boxShadow:"inset 0 2px 4px rgba(0,0,0,0.15)" }}>{bpm}</div>
           <button onClick={() => setBpm(b => Math.min(220, b+5))} style={hwBtn}>+</button>
         </div>
-
-        {/* Style */}
         <select value={style} onChange={e => setStyle(e.target.value)} style={{ background:T.panel,border:`1px solid ${T.borderDark}`,borderRadius:"3px",padding:"5px 6px",fontSize:"9px",color:T.text,fontFamily:"monospace",letterSpacing:"1px",cursor:"pointer",flexShrink:0 }}>
           {STYLES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-
         <div style={{ flex:1 }} />
-
-        {/* EVERYBODY IN */}
         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:"3px",flexShrink:0 }}>
           <button
             onPointerDown={e => { e.preventDefault(); onBandDown(); }}
@@ -322,9 +293,7 @@ export default function App() {
             {bandListening ? "LISTEN" : bandCooking ? "COOK" : "ALL IN"}
           </div>
         </div>
-
-        {/* Vibe */}
-        <button onClick={() => setShowVibe(true)} title="Set a vibe" style={{ width:"42px",height:"42px",borderRadius:"5px",flexShrink:0,background:T.panelDeep,border:`1.5px solid ${T.borderDark}`,color:T.textMid,fontSize:"14px",cursor:"pointer",boxShadow:`0 3px 0 ${T.borderDark},inset 0 1px 0 rgba(255,255,255,0.5)` }}>✦</button>
+        <button onClick={() => setShowVibe(true)} style={{ width:"42px",height:"42px",borderRadius:"5px",flexShrink:0,background:T.panelDeep,border:`1.5px solid ${T.borderDark}`,color:T.textMid,fontSize:"14px",cursor:"pointer",boxShadow:`0 3px 0 ${T.borderDark},inset 0 1px 0 rgba(255,255,255,0.5)` }}>✦</button>
       </div>
 
       {/* Step strip */}
@@ -336,7 +305,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 4×4 PAD GRID */}
+      {/* PAD GRID */}
       {view === "pads" && (
         <>
           <div style={{ width:"100%",maxWidth:"480px",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"7px",padding:"13px",background:"#c0bbb2",borderRadius:"10px",border:`2px solid ${T.borderDark}`,boxShadow:`inset 0 3px 10px rgba(0,0,0,0.22),0 2px 6px ${T.shadow}`,marginBottom:"12px" }}>
@@ -346,31 +315,19 @@ export default function App() {
               const isActive = activePads[pad.id];
               const isPlay   = playing && pad.role && !channels[pad.id]?.muted;
               const col      = pad.role?.color || "#888";
-
               return (
-                <button
-                  key={pad.id}
+                <button key={pad.id}
                   onPointerDown={e => { e.preventDefault(); onPadDown(pad); }}
                   onPointerUp={() => onPadUp(pad)}
                   onPointerLeave={() => { if (padListening === pad.id) onPadUp(pad); }}
-                  style={{ width:"100%",aspectRatio:"1",border:`2px solid ${isRedir||isActive?col:T.padBorder}`,borderRadius:"5px",cursor:"pointer",touchAction:"none",WebkitTapHighlightColor:"transparent",outline:"none",position:"relative",overflow:"hidden",background:pad.role?(isActive?col:isRedir?`repeating-linear-gradient(45deg,${T.padFace},${T.padFace} 4px,${col}33 4px,${col}33 8px)`:T.padFace):"#ccc9c0",boxShadow:isActive?`inset 0 3px 5px rgba(0,0,0,0.35),0 0 0 2px ${col}`:isPlay?`0 4px 0 ${T.padSide},0 0 0 1px ${col}55`:`0 4px 0 ${T.padSide},inset 0 1px 0 rgba(255,255,255,0.55)`,transform:isActive?"translateY(3px)":"translateY(0)",transition:"all 0.06s ease",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"4px",minHeight:"66px" }}
-                >
+                  style={{ width:"100%",aspectRatio:"1",border:`2px solid ${isRedir||isActive?col:T.padBorder}`,borderRadius:"5px",cursor:"pointer",touchAction:"none",WebkitTapHighlightColor:"transparent",outline:"none",position:"relative",overflow:"hidden",background:pad.role?(isActive?col:isRedir?`repeating-linear-gradient(45deg,${T.padFace},${T.padFace} 4px,${col}33 4px,${col}33 8px)`:T.padFace):"#ccc9c0",boxShadow:isActive?`inset 0 3px 5px rgba(0,0,0,0.35),0 0 0 2px ${col}`:isPlay?`0 4px 0 ${T.padSide},0 0 0 1px ${col}55`:`0 4px 0 ${T.padSide},inset 0 1px 0 rgba(255,255,255,0.55)`,transform:isActive?"translateY(3px)":"translateY(0)",transition:"all 0.06s ease",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"4px",minHeight:"66px" }}>
                   <div style={{ position:"absolute",top:"4px",left:"5px",fontSize:"7px",color:isActive?"rgba(255,255,255,0.5)":T.textLight,fontFamily:"monospace" }}>{parseInt(pad.id)+1}</div>
-
-                  {isPlay && !isActive && (
-                    <div style={{ position:"absolute",top:"5px",right:"5px",width:"5px",height:"5px",borderRadius:"50%",background:col,animation:"livePulse 1.2s infinite",boxShadow:`0 0 4px ${col}` }} />
-                  )}
-                  {isCook && (
-                    <div style={{ position:"absolute",inset:0,background:"rgba(255,255,255,0.6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",animation:"spin 1s linear infinite",color:T.textMid }}>◎</div>
-                  )}
-                  {isRedir && (
-                    <div style={{ position:"absolute",top:"5px",right:"5px",width:"6px",height:"6px",borderRadius:"50%",background:T.accent,animation:"recPulse 0.4s infinite" }} />
-                  )}
-
+                  {isPlay && !isActive && <div style={{ position:"absolute",top:"5px",right:"5px",width:"5px",height:"5px",borderRadius:"50%",background:col,animation:"livePulse 1.2s infinite",boxShadow:`0 0 4px ${col}` }} />}
+                  {isCook && <div style={{ position:"absolute",inset:0,background:"rgba(255,255,255,0.6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",animation:"spin 1s linear infinite",color:T.textMid }}>◎</div>}
+                  {isRedir && <div style={{ position:"absolute",top:"5px",right:"5px",width:"6px",height:"6px",borderRadius:"50%",background:T.accent,animation:"recPulse 0.4s infinite" }} />}
                   <div style={{ fontSize:pad.role?"9px":"8px",fontWeight:"700",color:isActive?"#fff":pad.role?col:T.textLight,letterSpacing:"0.5px",textTransform:"uppercase",fontFamily:"'Helvetica Neue',sans-serif",textAlign:"center",padding:"0 4px",transition:"color 0.06s",lineHeight:1.2 }}>
                     {pad.role ? pad.role.label : "+ ASSIGN"}
                   </div>
-
                   {pad.role && (
                     <div style={{ display:"flex",gap:"1px" }}>
                       {(pad.steps || []).map((s, i) => (
@@ -378,7 +335,6 @@ export default function App() {
                       ))}
                     </div>
                   )}
-
                   {aiReplies[pad.id] && !isActive && (
                     <div style={{ position:"absolute",bottom:"3px",left:0,right:0,fontSize:"6px",color:col,textAlign:"center",fontStyle:"italic",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:"0 4px",opacity:0.75 }}>
                       "{aiReplies[pad.id]}"
@@ -389,33 +345,21 @@ export default function App() {
             })}
           </div>
 
-          {/* Mixer button */}
           <button onClick={() => setMixerOpen(true)} style={{ padding:"8px 28px",background:T.panel,border:`1.5px solid ${T.borderDark}`,borderRadius:"20px",color:T.textMid,fontSize:"9px",letterSpacing:"3px",cursor:"pointer",fontFamily:"monospace",textTransform:"uppercase",boxShadow:`0 3px 0 ${T.borderDark},inset 0 1px 0 rgba(255,255,255,0.6)`,display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px" }}>
             <span style={{ fontSize:"11px",opacity:0.5 }}>⊙ ⊙ ⊙</span> MIXER
           </button>
-
           <div style={{ textAlign:"center",fontSize:"8px",color:T.textLight,letterSpacing:"2px",fontFamily:"monospace" }}>
             HOLD A PAD TO REDIRECT · HOLD ALL IN TO SET THE BAND
           </div>
         </>
       )}
 
-      {view === "learn" && (
-        <LearnView pads={pads} onUpdatePad={updPad} />
-      )}
+      {view === "learn" && <LearnView pads={pads} onUpdatePad={updPad} />}
 
-      {/* Overlays */}
       {roleSheet && <RolePicker pad={roleSheet} onAssign={assignRole} onClose={() => setRoleSheet(null)} />}
-      {mixerOpen && (
-        <MixerOverlay
-          pads={pads} channels={channels} panVals={panVals} playing={playing}
-          onUpdCh={updCh} onUpdPan={(id, v) => setPanVals(p => ({...p,[id]:v}))}
-          onClose={() => setMixerOpen(false)}
-        />
-      )}
+      {mixerOpen && <MixerOverlay pads={pads} channels={channels} panVals={panVals} playing={playing} onUpdCh={updCh} onUpdPan={(id, v) => setPanVals(p => ({...p,[id]:v}))} onClose={() => setMixerOpen(false)} />}
       {showVibe && <VibeSheet onSubmit={onVibeSubmit} onClose={() => setShowVibe(false)} />}
 
-      {/* Bottom nav */}
       <div style={{ position:"fixed",bottom:0,left:0,right:0,background:T.body,borderTop:`2px solid ${T.borderDark}`,display:"flex",justifyContent:"center",boxShadow:"0 -2px 10px rgba(0,0,0,0.12)",zIndex:40 }}>
         <div style={{ width:"100%",maxWidth:"480px",display:"flex" }}>
           {[{id:"pads",label:"PADS"},{id:"learn",label:"LEARN"}].map(tab => (
