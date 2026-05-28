@@ -9,48 +9,38 @@ export default async function handler(req) {
     const body = await req.json();
     const { pad, style, bpm, vibe } = body;
 
-    const systemPrompt = vibe
+    const prompt = vibe
       ? `You are an AI ${pad.role} musician. Style: ${style}. BPM: ${bpm}.
-Influences/tags: ${(pad.tags || []).join(", ") || "none"}.
+Influences: ${(pad.tags || []).join(", ") || "none"}.
 Standing direction: ${pad.direction || "none"}.
 The band leader set a vibe: "${vibe}".
-Interpret this vibe for your instrument and return a 16-step pattern.
+Interpret this vibe for your instrument.
 Respond ONLY in JSON, no markdown:
-{
-  "reply": "max 8 words lowercase in-character response",
-  "steps": [16 values, 0 or 1],
-  "feel": "one word describing the groove"
-}`
+{"reply":"max 8 words lowercase in-character","steps":[16 values 0 or 1],"feel":"one word"}`
       : `You are an AI ${pad.role} musician. Style: ${style}. BPM: ${bpm}.
-Influences/tags: ${(pad.tags || []).join(", ") || "none"}.
+Influences: ${(pad.tags || []).join(", ") || "none"}.
 Standing direction: ${pad.direction || "none"}.
-The band leader hummed/tapped this rhythm (step positions 0-15 that had hits): ${JSON.stringify(
+The band leader hummed this rhythm (steps 0-15 with hits): ${JSON.stringify(
           (pad.steps || []).map((s, i) => (s ? i : null)).filter(i => i !== null)
         )}.
-Interpret this rhythm for your instrument with your personality.
+Interpret this for your instrument with personality.
 Respond ONLY in JSON, no markdown:
-{
-  "reply": "max 8 words lowercase in-character response",
-  "steps": [16 values, 0 or 1],
-  "feel": "one word describing the groove"
-}`;
+{"reply":"max 8 words lowercase in-character","steps":[16 values 0 or 1],"feel":"one word"}`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type":      "application/json",
-        "x-api-key":         process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model:      "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        messages:   [{ role: "user", content: systemPrompt }],
-      }),
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.9, maxOutputTokens: 300 },
+        }),
+      }
+    );
 
-    const data = await response.json();
-    const text = data.content?.map(b => b.text || "").join("") || "{}";
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
 
     return new Response(JSON.stringify(parsed), {
@@ -58,10 +48,10 @@ Respond ONLY in JSON, no markdown:
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error("Cook API error:", err);
-    return new Response(JSON.stringify({ error: "Cook failed", reply: "having a moment.", steps: new Array(16).fill(0) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    console.error("Cook error:", err);
+    return new Response(
+      JSON.stringify({ reply: "having a moment.", steps: new Array(16).fill(0), feel: "quiet" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 }
